@@ -12,6 +12,14 @@ WEEKS=${WEEKS:-26}
 # Window for the headline stats and the PR listing
 RECENT_DAYS=${RECENT_DAYS:-30}
 
+# Maintainers excluded from the stats (GitHub logins)
+# ref: https://github.com/ggml-org/llama.cpp-dev/pull/3#issuecomment-6386544204
+EXCLUDE_AUTHORS=(
+    "ggerganov"
+    "CISC"
+    "ngxson"
+)
+
 # Requires an authenticated gh (GH_TOKEN in CI)
 if ! command -v gh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
     echo "Error: gh and jq are required."
@@ -83,13 +91,16 @@ for (( w=FIRST_WEEK; w<=WEEK0; w+=604800 )); do
 done
 
 # --- Aggregate ---
-# Maintainers: users who merged at least one PR in the fetched window.
+# Maintainers: users who merged at least one PR in the fetched window,
+# minus EXCLUDE_AUTHORS.
 # Output lines:
 #   M|<login>
 #   W|<week>|<prs>|<mean_h>|<median_h>
 #   R|<prs>|<mean_h>|<median_h>
 #   P|<hours>|<number>|<author>|<title>
-jq -rs --argjson first_week "$FIRST_WEEK" --argjson since "$(( NOW - RECENT_DAYS * 86400 ))" '
+EXCLUDE_JSON=$(jq -cn '$ARGS.positional' --args "${EXCLUDE_AUTHORS[@]}")
+
+jq -rs --argjson first_week "$FIRST_WEEK" --argjson since "$(( NOW - RECENT_DAYS * 86400 ))" --argjson exclude "$EXCLUDE_JSON" '
 def hours: .open / 3600;
 def stats: map(hours) | sort | {
     n: length,
@@ -102,7 +113,8 @@ def r1: . * 10 | round | "\(. / 10 | floor).\(. % 10)";
 def week: . - . % 86400 - ((. / 86400 | floor) + 3) % 7 * 86400;
 
 unique_by(.number) | map(select(.merged >= $first_week)) |
-(map(select(.merged_by != "") | {(.merged_by): true}) | add // {}) as $m |
+($exclude | map({(.): true}) | add // {}) as $x |
+(map(select(.merged_by != "" and ($x[.merged_by] | not)) | {(.merged_by): true}) | add // {}) as $m |
 map(select($m[.author])) as $prs |
 ($m | keys_unsorted | sort_by(ascii_downcase) | .[] | "M|\(.)"),
 ($prs | group_by(.merged | week)[] |
@@ -170,6 +182,7 @@ echo "Generating $README_FILE ..."
     echo ""
     echo "- **PRs:** merged into \`master\` of [$REPO](https://github.com/$REPO), authored by a maintainer"
     echo "- **Maintainers:** users who merged at least one PR in the last $WEEKS weeks ($N_MAINTAINERS)"
+    echo "- **Excluded maintainers:** ${EXCLUDE_AUTHORS[*]}"
     echo "- **Time to merge:** from opening until merged, excluding the time spent as a draft"
     echo "- **Mean time to merge (last $RECENT_DAYS days):** ${RECENT_MEAN}h over $RECENT_PRS PRs (median ${RECENT_MEDIAN}h)"
     echo ""
